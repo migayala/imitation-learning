@@ -1,0 +1,16 @@
+env:
+  name: Lift
+  robot: Panda
+  has_renderer: false
+  has_offscreen_renderer: true
+  use_camera_obs: true
+  camera_names: agentview
+  camera_heights: 84
+  camera_widths: 84
+  reward_shaping: false
+  control_freq: 20
+
+collection:
+  num_episodes: 200
+  max_episode_steps: 500
+  output_path: data/demos.hdf5
