@@ -1,5 +1,5 @@
 """
-PyTorch Dataset for loading HDF5 demonstration data.
+PyTorch Dataset for loading robomimic HDF5 demonstration data.
 """
 
 import h5py
@@ -10,8 +10,9 @@ from torchvision import transforms
 
 
 class DemoDataset(Dataset):
-    def __init__(self, hdf5_path: str, image_size: int = 84):
+    def __init__(self, hdf5_path: str, camera: str = "agentview_image", image_size: int = 84):
         self.path = hdf5_path
+        self.camera = camera
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((image_size, image_size)),
@@ -20,11 +21,10 @@ class DemoDataset(Dataset):
                                  std=[0.229, 0.224, 0.225]),
         ])
 
-        # Index all (episode, step) pairs
         self.index = []
         with h5py.File(hdf5_path, "r") as f:
-            for ep_key in f.keys():
-                n_steps = len(f[ep_key]["actions"])
+            for ep_key in f["data"].keys():
+                n_steps = len(f["data"][ep_key]["actions"])
                 for step in range(n_steps):
                     self.index.append((ep_key, step))
 
@@ -34,19 +34,20 @@ class DemoDataset(Dataset):
     def __getitem__(self, idx):
         ep_key, step = self.index[idx]
         with h5py.File(self.path, "r") as f:
-            obs = f[ep_key]["observations"][step]  # (H, W, C) uint8
-            action = f[ep_key]["actions"][step]     # (action_dim,)
+            obs = f["data"][ep_key]["obs"][self.camera][step]  # (H, W, C) uint8
+            action = f["data"][ep_key]["actions"][step]        # (7,)
 
         obs_tensor = self.transform(obs)
         action_tensor = torch.tensor(action, dtype=torch.float32)
         return obs_tensor, action_tensor
 
 
-def make_dataloaders(hdf5_path: str, image_size: int, batch_size: int, train_split: float):
-    dataset = DemoDataset(hdf5_path, image_size)
+def make_dataloaders(hdf5_path: str, camera: str, image_size: int, batch_size: int, train_split: float):
+    dataset = DemoDataset(hdf5_path, camera, image_size)
     n_train = int(len(dataset) * train_split)
     n_val = len(dataset) - n_train
-    train_set, val_set = random_split(dataset, [n_train, n_val])
+    train_set, val_set = random_split(dataset, [n_train, n_val],
+                                      generator=torch.Generator().manual_seed(42))
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True,
                               num_workers=4, pin_memory=True)
