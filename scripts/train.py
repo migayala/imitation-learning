@@ -16,6 +16,8 @@ from model import BCPolicy
 
 def train(cfg):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_amp = device.type == "cuda"
+    autocast_device = "cuda" if use_amp else "cpu"
     print(f"Training on: {device}")
 
     train_loader, val_loader = make_dataloaders(
@@ -24,6 +26,8 @@ def train(cfg):
         image_size=cfg["data"]["image_size"],
         batch_size=cfg["training"]["batch_size"],
         train_split=cfg["data"]["train_split"],
+        schema=cfg["data"].get("schema", "robomimic_image"),
+        num_workers=cfg["training"].get("num_workers", 4),
     )
 
     model = BCPolicy(
@@ -38,7 +42,7 @@ def train(cfg):
         weight_decay=cfg["training"]["weight_decay"],
     )
     criterion = nn.MSELoss()
-    scaler = torch.amp.GradScaler("cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     os.makedirs(cfg["training"]["checkpoint_dir"], exist_ok=True)
     writer = SummaryWriter(cfg["training"]["log_dir"])
@@ -50,8 +54,8 @@ def train(cfg):
         train_loss = 0.0
         for obs, actions in tqdm(train_loader, desc=f"Epoch {epoch:3d} [train]", leave=False):
             obs, actions = obs.to(device), actions.to(device)
-            optimizer.zero_grad()
-            with torch.amp.autocast("cuda"):
+            optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
                 pred = model(obs)
                 loss = criterion(pred, actions)
             scaler.scale(loss).backward()
@@ -67,7 +71,7 @@ def train(cfg):
         with torch.no_grad():
             for obs, actions in tqdm(val_loader, desc=f"Epoch {epoch:3d} [val]", leave=False):
                 obs, actions = obs.to(device), actions.to(device)
-                with torch.amp.autocast("cuda"):
+                with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
                     pred = model(obs)
                     loss = criterion(pred, actions)
                 val_loss += loss.item()

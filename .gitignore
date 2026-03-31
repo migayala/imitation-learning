@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+
+# Local datasets and generated artifacts
+data/
+runs/
+models/

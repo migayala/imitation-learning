@@ -13,4 +13,4 @@ env:
 collection:
   num_episodes: 200
   max_episode_steps: 500
-  output_path: data/demos.hdf5
+  output_path: data/random_rollouts.hdf5

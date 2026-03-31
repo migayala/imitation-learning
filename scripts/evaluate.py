@@ -16,6 +16,10 @@ from model import BCPolicy
 
 def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    camera_name = cfg["env"]["camera_names"]
+    if isinstance(camera_name, (list, tuple)):
+        camera_name = camera_name[0]
+    image_key = f"{camera_name}_image"
 
     # Load model
     model = BCPolicy(
@@ -47,6 +51,7 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
         reward_shaping=False,
         control_freq=env_cfg["control_freq"],
     )
+    action_low, action_high = env.action_spec
 
     successes = 0
     for ep in tqdm(range(num_episodes), desc="Evaluating"):
@@ -55,11 +60,12 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
         ep_success = False
 
         for _ in range(env_cfg["max_episode_steps"] if "max_episode_steps" in env_cfg else 500):
-            img = obs[f"{env_cfg['camera_names']}_image"]  # (H, W, C) uint8
+            img = obs[image_key]  # (H, W, C) uint8
             img_tensor = transform(img).unsqueeze(0).to(device)  # (1, C, H, W)
 
             with torch.no_grad():
                 action = model(img_tensor).squeeze(0).cpu().numpy()
+            action = np.clip(action, action_low, action_high)
 
             obs, reward, done, info = env.step(action)
             if done or reward > 0:
