@@ -5,9 +5,19 @@ Behavior cloning on the robosuite `Lift` task using a ResNet18 vision encoder + 
 ## Setup
 
 ```bash
+# Option A: existing conda env
 conda activate robotics
 pip install -r requirements.txt
+
+# Option B: local venv
+# python3 -m venv .venv
+# . .venv/bin/activate
+# pip install -r requirements.txt
+
+# Optional (simulator + robomimic tooling):
+# pip install -r requirements-sim.txt
 ```
+`requirements-sim.txt` may require additional system tools (for example `cmake`) depending on platform.
 
 Canonical training dataset: `data/image.hdf5` (robomimic image schema).
 
@@ -34,6 +44,11 @@ tensorboard --logdir runs
 python3 scripts/evaluate.py --config configs/train.yaml --checkpoint models/best.pt
 ```
 
+### 5. Smoke test
+```bash
+python3 -m unittest tests/test_smoke.py
+```
+
 ## Data Format
 
 `scripts/dataset.py` expects `robomimic_image` schema:
@@ -42,6 +57,7 @@ python3 scripts/evaluate.py --config configs/train.yaml --checkpoint models/best
 - required keys: `obs/<camera_key>`, `actions`
 
 The default camera key in `configs/train.yaml` is `agentview_image`.
+Training writes a config snapshot to `models/train_config_snapshot.yaml`.
 
 ## Structure
 

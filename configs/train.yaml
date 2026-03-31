@@ -12,6 +12,7 @@ model:
   hidden_dim: 256
 
 training:
+  seed: 42
   epochs: 100
   batch_size: 64
   num_workers: 4
@@ -21,3 +22,6 @@ training:
   save_every: 10
   log_dir: runs/
   checkpoint_dir: models/
+
+evaluation:
+  seed: 42

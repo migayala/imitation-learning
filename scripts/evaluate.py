@@ -4,17 +4,27 @@ Reports success rate over N rollouts.
 """
 
 import argparse
-import yaml
+import random
 import torch
 import numpy as np
 import robosuite as suite
+import yaml
 from torchvision import transforms
 from tqdm import tqdm
 
 from model import BCPolicy
 
 
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
 def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
+    seed = cfg.get("evaluation", {}).get("seed", cfg["training"].get("seed", 42))
+    set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     camera_name = cfg["env"]["camera_names"]
     if isinstance(camera_name, (list, tuple)):

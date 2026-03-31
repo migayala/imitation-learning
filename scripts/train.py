@@ -3,10 +3,12 @@ Train behavior cloning policy on robomimic demonstrations.
 """
 
 import argparse
-import yaml
 import os
+import random
 import torch
 import torch.nn as nn
+import yaml
+import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -14,11 +16,21 @@ from dataset import make_dataloaders
 from model import BCPolicy
 
 
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
 def train(cfg):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = device.type == "cuda"
     autocast_device = "cuda" if use_amp else "cpu"
+    seed = cfg["training"].get("seed", 42)
+    set_seed(seed)
     print(f"Training on: {device}")
+    print(f"Seed: {seed}")
 
     train_loader, val_loader = make_dataloaders(
         hdf5_path=cfg["data"]["path"],
@@ -46,6 +58,9 @@ def train(cfg):
 
     os.makedirs(cfg["training"]["checkpoint_dir"], exist_ok=True)
     writer = SummaryWriter(cfg["training"]["log_dir"])
+    config_snapshot = os.path.join(cfg["training"]["checkpoint_dir"], "train_config_snapshot.yaml")
+    with open(config_snapshot, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
 
     best_val_loss = float("inf")
 
