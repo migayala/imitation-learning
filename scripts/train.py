@@ -63,10 +63,13 @@ def train(cfg):
         yaml.safe_dump(cfg, f, sort_keys=False)
 
     best_val_loss = float("inf")
+    action_dim = cfg["model"]["action_dim"]
 
     for epoch in range(1, cfg["training"]["epochs"] + 1):
         model.train()
         train_loss = 0.0
+        train_count = 0
+        train_sqerr = torch.zeros(action_dim, dtype=torch.float64)
         for obs, actions in tqdm(train_loader, desc=f"Epoch {epoch:3d} [train]", leave=False):
             obs, actions = obs.to(device), actions.to(device)
             optimizer.zero_grad(set_to_none=True)
@@ -79,10 +82,16 @@ def train(cfg):
             scaler.step(optimizer)
             scaler.update()
             train_loss += loss.item()
+            sqerr = (pred.detach() - actions).pow(2).sum(dim=0).to(dtype=torch.float64, device="cpu")
+            train_sqerr += sqerr
+            train_count += actions.shape[0]
         train_loss /= len(train_loader)
+        train_mse_per_dim = train_sqerr / max(train_count, 1)
 
         model.eval()
         val_loss = 0.0
+        val_count = 0
+        val_sqerr = torch.zeros(action_dim, dtype=torch.float64)
         with torch.no_grad():
             for obs, actions in tqdm(val_loader, desc=f"Epoch {epoch:3d} [val]", leave=False):
                 obs, actions = obs.to(device), actions.to(device)
@@ -90,10 +99,17 @@ def train(cfg):
                     pred = model(obs)
                     loss = criterion(pred, actions)
                 val_loss += loss.item()
+                sqerr = (pred - actions).pow(2).sum(dim=0).to(dtype=torch.float64, device="cpu")
+                val_sqerr += sqerr
+                val_count += actions.shape[0]
         val_loss /= len(val_loader)
+        val_mse_per_dim = val_sqerr / max(val_count, 1)
 
         writer.add_scalar("Loss/train", train_loss, epoch)
         writer.add_scalar("Loss/val", val_loss, epoch)
+        for dim in range(action_dim):
+            writer.add_scalar(f"LossPerDim/train_mse_dim{dim}", float(train_mse_per_dim[dim]), epoch)
+            writer.add_scalar(f"LossPerDim/val_mse_dim{dim}", float(val_mse_per_dim[dim]), epoch)
         print(f"Epoch {epoch:3d} | train: {train_loss:.4f} | val: {val_loss:.4f}")
 
         if epoch % cfg["training"]["save_every"] == 0:

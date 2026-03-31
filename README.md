@@ -38,6 +38,7 @@ python3 scripts/train.py --config configs/train.yaml
 ```bash
 tensorboard --logdir runs
 ```
+Logged scalars include aggregate loss (`Loss/train`, `Loss/val`) and per-action-dimension MSE (`LossPerDim/*`).
 
 ### 4. Evaluate
 ```bash
