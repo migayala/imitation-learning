@@ -3,8 +3,11 @@ Train behavior cloning policy on robomimic demonstrations.
 """
 
 import argparse
+import hashlib
+import json
 import os
 import random
+from datetime import datetime, timezone
 import torch
 import torch.nn as nn
 import yaml
@@ -21,6 +24,11 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def write_metadata(metadata_path: str, metadata: dict) -> None:
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
 
 
 def train(cfg):
@@ -59,8 +67,19 @@ def train(cfg):
     os.makedirs(cfg["training"]["checkpoint_dir"], exist_ok=True)
     writer = SummaryWriter(cfg["training"]["log_dir"])
     config_snapshot = os.path.join(cfg["training"]["checkpoint_dir"], "train_config_snapshot.yaml")
+    config_bytes = yaml.safe_dump(cfg, sort_keys=True).encode("utf-8")
+    config_hash = hashlib.sha256(config_bytes).hexdigest()
     with open(config_snapshot, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
+    write_metadata(
+        os.path.join(cfg["training"]["checkpoint_dir"], "run_metadata.json"),
+        {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "device": str(device),
+            "seed": seed,
+            "config_hash_sha256": config_hash,
+        },
+    )
 
     best_val_loss = float("inf")
     action_dim = cfg["model"]["action_dim"]
@@ -112,13 +131,38 @@ def train(cfg):
             writer.add_scalar(f"LossPerDim/val_mse_dim{dim}", float(val_mse_per_dim[dim]), epoch)
         print(f"Epoch {epoch:3d} | train: {train_loss:.4f} | val: {val_loss:.4f}")
 
+        best_so_far = min(best_val_loss, float(val_loss))
+
         if epoch % cfg["training"]["save_every"] == 0:
             path = os.path.join(cfg["training"]["checkpoint_dir"], f"checkpoint_ep{epoch}.pt")
             torch.save(model.state_dict(), path)
+            write_metadata(
+                os.path.join(cfg["training"]["checkpoint_dir"], f"checkpoint_ep{epoch}.metadata.json"),
+                {
+                    "epoch": epoch,
+                    "val_loss": float(val_loss),
+                    "best_val_loss": best_so_far,
+                    "checkpoint_path": path,
+                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                    "config_hash_sha256": config_hash,
+                },
+            )
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), os.path.join(cfg["training"]["checkpoint_dir"], "best.pt"))
+            best_path = os.path.join(cfg["training"]["checkpoint_dir"], "best.pt")
+            torch.save(model.state_dict(), best_path)
+            write_metadata(
+                os.path.join(cfg["training"]["checkpoint_dir"], "best.metadata.json"),
+                {
+                    "epoch": epoch,
+                    "val_loss": float(val_loss),
+                    "best_val_loss": float(best_val_loss),
+                    "checkpoint_path": best_path,
+                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                    "config_hash_sha256": config_hash,
+                },
+            )
 
     writer.close()
     print(f"Training complete. Best val loss: {best_val_loss:.4f}")

@@ -64,6 +64,7 @@ python3 scripts/inspect_hdf5.py --path data/image.hdf5 --max-demos 5 --camera ag
 
 The default camera key in `configs/train.yaml` is `agentview_image`.
 Training writes a config snapshot to `models/train_config_snapshot.yaml`.
+Training also writes JSON metadata files in the checkpoint directory (`run_metadata.json`, `best.metadata.json`, and `checkpoint_ep*.metadata.json`).
 CI runs `py_compile` and `tests/test_smoke.py` on each push and pull request.
 
 ## Structure
