@@ -50,6 +50,11 @@ python3 scripts/evaluate.py --config configs/train.yaml --checkpoint models/best
 python3 -m unittest tests/test_smoke.py
 ```
 
+### 6. Inspect dataset schema
+```bash
+python3 scripts/inspect_hdf5.py --path data/image.hdf5 --max-demos 5 --camera agentview_image
+```
+
 ## Data Format
 
 `scripts/dataset.py` expects `robomimic_image` schema:
@@ -59,6 +64,7 @@ python3 -m unittest tests/test_smoke.py
 
 The default camera key in `configs/train.yaml` is `agentview_image`.
 Training writes a config snapshot to `models/train_config_snapshot.yaml`.
+CI runs `py_compile` and `tests/test_smoke.py` on each push and pull request.
 
 ## Structure
 
