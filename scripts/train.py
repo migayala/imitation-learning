@@ -9,7 +9,6 @@ import os
 import random
 from datetime import datetime, timezone
 import torch
-import torch.nn as nn
 import yaml
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
@@ -61,7 +60,6 @@ def train(cfg):
         lr=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
     )
-    criterion = nn.MSELoss()
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     os.makedirs(cfg["training"]["checkpoint_dir"], exist_ok=True)
@@ -83,6 +81,20 @@ def train(cfg):
 
     best_val_loss = float("inf")
     action_dim = cfg["model"]["action_dim"]
+    raw_loss_weights = cfg["training"].get("action_loss_weights")
+    if raw_loss_weights is None:
+        action_loss_weights = torch.ones(action_dim, dtype=torch.float32, device=device)
+    else:
+        if len(raw_loss_weights) != action_dim:
+            raise ValueError(
+                f"training.action_loss_weights length {len(raw_loss_weights)} must match model.action_dim {action_dim}"
+            )
+        action_loss_weights = torch.tensor(raw_loss_weights, dtype=torch.float32, device=device)
+        if torch.any(action_loss_weights <= 0):
+            raise ValueError("training.action_loss_weights values must be > 0")
+
+    if not torch.allclose(action_loss_weights, torch.ones_like(action_loss_weights)):
+        print(f"Using action loss weights: {action_loss_weights.tolist()}")
 
     for epoch in range(1, cfg["training"]["epochs"] + 1):
         model.train()
@@ -94,7 +106,8 @@ def train(cfg):
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
                 pred = model(obs)
-                loss = criterion(pred, actions)
+                per_dim_mse = (pred - actions).pow(2).mean(dim=0)
+                loss = (per_dim_mse * action_loss_weights).mean()
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["training"]["grad_clip"])
@@ -116,7 +129,8 @@ def train(cfg):
                 obs, actions = obs.to(device), actions.to(device)
                 with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
                     pred = model(obs)
-                    loss = criterion(pred, actions)
+                    per_dim_mse = (pred - actions).pow(2).mean(dim=0)
+                    loss = (per_dim_mse * action_loss_weights).mean()
                 val_loss += loss.item()
                 sqerr = (pred - actions).pow(2).sum(dim=0).to(dtype=torch.float64, device="cpu")
                 val_sqerr += sqerr

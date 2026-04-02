@@ -31,18 +31,27 @@ This script collects random-policy trajectories and writes robomimic-compatible 
 
 ### 2. Train
 ```bash
+# Baseline (unweighted)
 python3 scripts/train.py --config configs/train.yaml
+
+# Dim6 weighted variant (A/B)
+python3 scripts/train.py --config configs/train_dim6_weighted.yaml
 ```
+`configs/train_dim6_weighted.yaml` sets `training.action_loss_weights: [1, 1, 1, 1, 1, 1, 3]` and writes outputs to `runs_dim6_weighted/` and `models_dim6_weighted/`.
 
 ### 3. Monitor training
 ```bash
-tensorboard --logdir runs
+tensorboard --logdir runs,runs_dim6_weighted
 ```
 Logged scalars include aggregate loss (`Loss/train`, `Loss/val`) and per-action-dimension MSE (`LossPerDim/*`).
 
 ### 4. Evaluate
 ```bash
+# Baseline
 python3 scripts/evaluate.py --config configs/train.yaml --checkpoint models/best.pt
+
+# Dim6 weighted variant
+python3 scripts/evaluate.py --config configs/train_dim6_weighted.yaml --checkpoint models_dim6_weighted/best.pt
 ```
 
 ### 5. Smoke test
@@ -63,7 +72,7 @@ python3 scripts/inspect_hdf5.py --path data/image.hdf5 --max-demos 5 --camera ag
 - required keys: `obs/<camera_key>`, `actions`
 
 The default camera key in `configs/train.yaml` is `agentview_image`.
-Training writes a config snapshot to `models/train_config_snapshot.yaml`.
+Training writes a config snapshot to `<checkpoint_dir>/train_config_snapshot.yaml`.
 Training also writes JSON metadata files in the checkpoint directory (`run_metadata.json`, `best.metadata.json`, and `checkpoint_ep*.metadata.json`).
 CI runs `py_compile` and `tests/test_smoke.py` on each push and pull request.
 
