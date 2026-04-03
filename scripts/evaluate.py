@@ -4,6 +4,8 @@ Reports success rate over N rollouts.
 """
 
 import argparse
+import json
+import os
 import random
 import torch
 import numpy as np
@@ -13,6 +15,19 @@ from torchvision import transforms
 from tqdm import tqdm
 
 from model import BCPolicy
+
+
+def load_action_stats(checkpoint: str):
+    action_stats_path = os.path.join(os.path.dirname(checkpoint), "action_stats.json")
+    if not os.path.exists(action_stats_path):
+        return None, None
+
+    with open(action_stats_path, "r", encoding="utf-8") as f:
+        stats = json.load(f)
+
+    action_mean = np.asarray(stats["action_mean"], dtype=np.float32)
+    action_std = np.asarray(stats["action_std"], dtype=np.float32)
+    return action_mean, action_std
 
 
 def set_seed(seed: int) -> None:
@@ -39,6 +54,11 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
     ).to(device)
     model.load_state_dict(torch.load(checkpoint, map_location=device))
     model.eval()
+    action_mean, action_std = load_action_stats(checkpoint)
+    if action_mean is None or action_std is None:
+        print("Warning: action_stats.json not found. Using raw model outputs without unnormalization.")
+    else:
+        print(f"Loaded action stats from: {os.path.join(os.path.dirname(checkpoint), 'action_stats.json')}")
 
     transform = transforms.Compose([
         transforms.ToPILImage(),
@@ -75,6 +95,8 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
 
             with torch.no_grad():
                 action = model(img_tensor).squeeze(0).cpu().numpy()
+            if action_mean is not None and action_std is not None:
+                action = action * action_std + action_mean
             action = np.clip(action, action_low, action_high)
 
             obs, reward, done, info = env.step(action)

@@ -36,8 +36,12 @@ python3 scripts/train.py --config configs/train.yaml
 
 # Dim6 weighted variant (A/B)
 python3 scripts/train.py --config configs/train_dim6_weighted.yaml
+
+# Action-standardized baseline variant (A/B)
+python3 scripts/train.py --config configs/train_standardized.yaml
 ```
 `configs/train_dim6_weighted.yaml` sets `training.action_loss_weights: [1, 1, 1, 1, 1, 1, 3]` and writes outputs to `runs_dim6_weighted/` and `models_dim6_weighted/`.
+Training computes action mean/std on the train split, normalizes action targets for optimization, and saves stats to `<checkpoint_dir>/action_stats.json`.
 
 ### 3. Monitor training
 ```bash
@@ -52,7 +56,11 @@ python3 scripts/evaluate.py --config configs/train.yaml --checkpoint models/best
 
 # Dim6 weighted variant
 python3 scripts/evaluate.py --config configs/train_dim6_weighted.yaml --checkpoint models_dim6_weighted/best.pt
+
+# Action-standardized baseline variant
+python3 scripts/evaluate.py --config configs/train_standardized.yaml --checkpoint models_standardized/best.pt
 ```
+Evaluation auto-loads `<checkpoint_dir>/action_stats.json` (if present) and unnormalizes model outputs before environment stepping.
 
 ### 5. Smoke test
 ```bash

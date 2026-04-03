@@ -39,7 +39,7 @@ def train(cfg):
     print(f"Training on: {device}")
     print(f"Seed: {seed}")
 
-    train_loader, val_loader = make_dataloaders(
+    train_loader, val_loader, action_mean_cpu, action_std_cpu = make_dataloaders(
         hdf5_path=cfg["data"]["path"],
         camera=cfg["data"]["camera"],
         image_size=cfg["data"]["image_size"],
@@ -61,6 +61,8 @@ def train(cfg):
         weight_decay=cfg["training"]["weight_decay"],
     )
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    action_mean = action_mean_cpu.to(device=device)
+    action_std = action_std_cpu.to(device=device)
 
     os.makedirs(cfg["training"]["checkpoint_dir"], exist_ok=True)
     writer = SummaryWriter(cfg["training"]["log_dir"])
@@ -70,17 +72,30 @@ def train(cfg):
     with open(config_snapshot, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
     write_metadata(
+        os.path.join(cfg["training"]["checkpoint_dir"], "action_stats.json"),
+        {
+            "action_mean": [float(x) for x in action_mean_cpu.tolist()],
+            "action_std": [float(x) for x in action_std_cpu.tolist()],
+            "source": "train_split",
+        },
+    )
+    write_metadata(
         os.path.join(cfg["training"]["checkpoint_dir"], "run_metadata.json"),
         {
             "created_at": datetime.now(timezone.utc).isoformat(),
             "device": str(device),
             "seed": seed,
             "config_hash_sha256": config_hash,
+            "action_stats_path": "action_stats.json",
         },
     )
 
     best_val_loss = float("inf")
     action_dim = cfg["model"]["action_dim"]
+    if action_mean.numel() != action_dim or action_std.numel() != action_dim:
+        raise ValueError(
+            f"Action stats dim mismatch: got mean/std dim {action_mean.numel()}, expected {action_dim}"
+        )
     raw_loss_weights = cfg["training"].get("action_loss_weights")
     if raw_loss_weights is None:
         action_loss_weights = torch.ones(action_dim, dtype=torch.float32, device=device)
@@ -114,7 +129,9 @@ def train(cfg):
             scaler.step(optimizer)
             scaler.update()
             train_loss += loss.item()
-            sqerr = (pred.detach() - actions).pow(2).sum(dim=0).to(dtype=torch.float64, device="cpu")
+            pred_raw = pred.detach() * action_std + action_mean
+            actions_raw = actions * action_std + action_mean
+            sqerr = (pred_raw - actions_raw).pow(2).sum(dim=0).to(dtype=torch.float64, device="cpu")
             train_sqerr += sqerr
             train_count += actions.shape[0]
         train_loss /= len(train_loader)
@@ -132,7 +149,9 @@ def train(cfg):
                     per_dim_mse = (pred - actions).pow(2).mean(dim=0)
                     loss = (per_dim_mse * action_loss_weights).mean()
                 val_loss += loss.item()
-                sqerr = (pred - actions).pow(2).sum(dim=0).to(dtype=torch.float64, device="cpu")
+                pred_raw = pred * action_std + action_mean
+                actions_raw = actions * action_std + action_mean
+                sqerr = (pred_raw - actions_raw).pow(2).sum(dim=0).to(dtype=torch.float64, device="cpu")
                 val_sqerr += sqerr
                 val_count += actions.shape[0]
         val_loss /= len(val_loader)

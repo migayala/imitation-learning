@@ -3,6 +3,7 @@ PyTorch Dataset for loading robomimic HDF5 demonstration data.
 """
 
 import h5py
+import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
@@ -29,6 +30,8 @@ class DemoDataset(Dataset):
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                  std=[0.229, 0.224, 0.225]),
         ])
+        self.action_mean = None
+        self.action_std = None
 
         self.index = []
         with h5py.File(hdf5_path, "r") as f:
@@ -87,7 +90,40 @@ class DemoDataset(Dataset):
 
         obs_tensor = self.transform(obs)
         action_tensor = torch.tensor(action, dtype=torch.float32)
+        if self.action_mean is not None and self.action_std is not None:
+            action_tensor = (action_tensor - self.action_mean) / self.action_std
         return obs_tensor, action_tensor
+
+    def get_raw_action(self, idx: int) -> np.ndarray:
+        ep_key, step = self.index[idx]
+        with h5py.File(self.path, "r") as f:
+            return np.asarray(f["data"][ep_key]["actions"][step], dtype=np.float64)
+
+    def set_action_normalization(self, action_mean: torch.Tensor, action_std: torch.Tensor) -> None:
+        self.action_mean = action_mean.to(dtype=torch.float32, device="cpu")
+        self.action_std = action_std.to(dtype=torch.float32, device="cpu")
+
+
+def compute_action_stats(dataset: DemoDataset, indices: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
+    if not indices:
+        raise ValueError("Cannot compute action stats from empty index list")
+
+    first = dataset.get_raw_action(indices[0])
+    action_dim = first.shape[0]
+    sum_actions = np.zeros(action_dim, dtype=np.float64)
+    sum_sq_actions = np.zeros(action_dim, dtype=np.float64)
+
+    for idx in indices:
+        action = dataset.get_raw_action(idx)
+        sum_actions += action
+        sum_sq_actions += action * action
+
+    count = float(len(indices))
+    mean = sum_actions / count
+    var = np.maximum(sum_sq_actions / count - mean * mean, 1e-12)
+    std = np.sqrt(var)
+
+    return torch.tensor(mean, dtype=torch.float32), torch.tensor(std, dtype=torch.float32)
 
 
 def make_dataloaders(
@@ -109,8 +145,13 @@ def make_dataloaders(
         n_train = len(dataset) - 1
         n_val = 1
 
-    train_set, val_set = random_split(dataset, [n_train, n_val],
-                                      generator=torch.Generator().manual_seed(42))
+    train_set, val_set = random_split(
+        dataset,
+        [n_train, n_val],
+        generator=torch.Generator().manual_seed(42),
+    )
+    action_mean, action_std = compute_action_stats(dataset, train_set.indices)
+    dataset.set_action_normalization(action_mean, action_std)
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers, pin_memory=torch.cuda.is_available())
@@ -118,4 +159,4 @@ def make_dataloaders(
                             num_workers=num_workers, pin_memory=torch.cuda.is_available())
 
     print(f"Dataset: {len(dataset)} steps | train: {n_train} | val: {n_val}")
-    return train_loader, val_loader
+    return train_loader, val_loader, action_mean, action_std
