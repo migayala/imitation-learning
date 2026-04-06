@@ -47,12 +47,14 @@ def train(cfg):
         train_split=cfg["data"]["train_split"],
         schema=cfg["data"].get("schema", "robomimic_image"),
         num_workers=cfg["training"].get("num_workers", 4),
+        frame_stack=cfg["data"].get("frame_stack", 1),
     )
 
     model = BCPolicy(
         action_dim=cfg["model"]["action_dim"],
         hidden_dim=cfg["model"]["hidden_dim"],
         freeze_encoder=cfg["model"]["freeze_encoder"],
+        in_channels=3 * cfg["data"].get("frame_stack", 1),
     ).to(device)
 
     optimizer = torch.optim.AdamW(

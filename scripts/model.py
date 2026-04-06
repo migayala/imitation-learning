@@ -8,11 +8,36 @@ from torchvision.models import resnet18, ResNet18_Weights
 
 
 class BCPolicy(nn.Module):
-    def __init__(self, action_dim: int, hidden_dim: int = 256, freeze_encoder: bool = False):
+    def __init__(
+        self,
+        action_dim: int,
+        hidden_dim: int = 256,
+        freeze_encoder: bool = False,
+        in_channels: int = 3,
+    ):
         super().__init__()
 
         # Vision encoder
         backbone = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+        if in_channels != 3:
+            if in_channels <= 0:
+                raise ValueError(f"in_channels must be > 0, got {in_channels}")
+            old_conv = backbone.conv1
+            new_conv = nn.Conv2d(
+                in_channels,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
+                bias=False,
+            )
+            with torch.no_grad():
+                repeat_factor = (in_channels + 2) // 3
+                repeated = old_conv.weight.repeat(1, repeat_factor, 1, 1)[:, :in_channels]
+                scale = float(in_channels) / 3.0
+                new_conv.weight.copy_(repeated / scale)
+            backbone.conv1 = new_conv
+
         # Remove final classification layer
         self.encoder = nn.Sequential(*list(backbone.children())[:-1])  # output: (B, 512, 1, 1)
         encoder_dim = 512

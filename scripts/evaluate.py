@@ -4,6 +4,7 @@ Reports success rate over N rollouts.
 """
 
 import argparse
+from collections import deque
 import json
 import os
 import random
@@ -37,6 +38,14 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def _gripper_cube_distance(obs: dict) -> float:
+    if "gripper_to_cube_pos" in obs:
+        return float(np.linalg.norm(obs["gripper_to_cube_pos"]))
+    if "robot0_eef_pos" in obs and "cube_pos" in obs:
+        return float(np.linalg.norm(obs["robot0_eef_pos"] - obs["cube_pos"]))
+    return float("nan")
+
+
 def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
     seed = cfg.get("evaluation", {}).get("seed", cfg["training"].get("seed", 42))
     set_seed(seed)
@@ -45,12 +54,17 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
     if isinstance(camera_name, (list, tuple)):
         camera_name = camera_name[0]
     image_key = f"{camera_name}_image"
+    frame_stack = int(cfg["data"].get("frame_stack", 1))
+    if frame_stack < 1:
+        raise ValueError(f"data.frame_stack must be >= 1, got {frame_stack}")
+    partial_lift_threshold = float(cfg.get("evaluation", {}).get("partial_lift_threshold", 0.03))
 
     # Load model
     model = BCPolicy(
         action_dim=cfg["model"]["action_dim"],
         hidden_dim=cfg["model"]["hidden_dim"],
         freeze_encoder=cfg["model"]["freeze_encoder"],
+        in_channels=3 * frame_stack,
     ).to(device)
     model.load_state_dict(torch.load(checkpoint, map_location=device))
     model.eval()
@@ -84,14 +98,24 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
     action_low, action_high = env.action_spec
 
     successes = 0
+    episode_max_lift = []
+    episode_min_gripper_dist = []
     for ep in tqdm(range(num_episodes), desc="Evaluating"):
         obs = env.reset()
         done = False
         ep_success = False
+        initial_cube_z = float(obs["cube_pos"][2]) if "cube_pos" in obs else float("nan")
+        max_cube_z = initial_cube_z
+        min_gripper_dist = _gripper_cube_distance(obs)
+        frame_buffer = deque(maxlen=frame_stack)
+        current_frame = transform(obs[image_key])
+        zero_frame = torch.zeros_like(current_frame)
+        for _ in range(frame_stack - 1):
+            frame_buffer.append(zero_frame)
+        frame_buffer.append(current_frame)
 
         for _ in range(env_cfg["max_episode_steps"] if "max_episode_steps" in env_cfg else 500):
-            img = obs[image_key]  # (H, W, C) uint8
-            img_tensor = transform(img).unsqueeze(0).to(device)  # (1, C, H, W)
+            img_tensor = torch.cat(list(frame_buffer), dim=0).unsqueeze(0).to(device)  # (1, 3K, H, W)
 
             with torch.no_grad():
                 action = model(img_tensor).squeeze(0).cpu().numpy()
@@ -100,16 +124,39 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
             action = np.clip(action, action_low, action_high)
 
             obs, reward, done, info = env.step(action)
+            if "cube_pos" in obs:
+                max_cube_z = max(max_cube_z, float(obs["cube_pos"][2]))
+            gripper_dist = _gripper_cube_distance(obs)
+            if np.isfinite(gripper_dist):
+                min_gripper_dist = min(min_gripper_dist, gripper_dist) if np.isfinite(min_gripper_dist) else gripper_dist
+            frame_buffer.append(transform(obs[image_key]))
             if done or reward > 0:
                 ep_success = True
                 break
 
         if ep_success:
             successes += 1
+        episode_max_lift.append(max_cube_z - initial_cube_z if np.isfinite(max_cube_z) and np.isfinite(initial_cube_z) else float("nan"))
+        episode_min_gripper_dist.append(min_gripper_dist)
 
     env.close()
     success_rate = successes / num_episodes
     print(f"\nSuccess rate: {successes}/{num_episodes} ({success_rate:.1%})")
+    lift_array = np.asarray(episode_max_lift, dtype=np.float64)
+    dist_array = np.asarray(episode_min_gripper_dist, dtype=np.float64)
+    valid_lift = lift_array[np.isfinite(lift_array)]
+    valid_dist = dist_array[np.isfinite(dist_array)]
+    if valid_lift.size > 0:
+        partial_rate = float(np.mean(valid_lift >= partial_lift_threshold))
+        print(
+            f"Partial lift >= {partial_lift_threshold:.3f} m: {partial_rate:.1%} | "
+            f"max_lift mean: {float(np.mean(valid_lift)):.4f} m | median: {float(np.median(valid_lift)):.4f} m"
+        )
+    if valid_dist.size > 0:
+        print(
+            f"Min gripper-cube distance mean: {float(np.mean(valid_dist)):.4f} m | "
+            f"median: {float(np.median(valid_dist)):.4f} m"
+        )
     return success_rate
 
 

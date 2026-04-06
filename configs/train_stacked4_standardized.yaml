@@ -1,0 +1,29 @@
+data:
+  path: data/image.hdf5
+  schema: robomimic_image
+  camera: agentview_image
+  train_split: 0.9
+  image_size: 84
+  frame_stack: 4
+
+model:
+  encoder: resnet18
+  freeze_encoder: false
+  action_dim: 7
+  hidden_dim: 256
+
+training:
+  seed: 42
+  epochs: 100
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0001
+  weight_decay: 0.00001
+  grad_clip: 1.0
+  save_every: 10
+  log_dir: runs_stacked4_standardized/
+  checkpoint_dir: models_stacked4_standardized/
+
+evaluation:
+  seed: 42
+  partial_lift_threshold: 0.03

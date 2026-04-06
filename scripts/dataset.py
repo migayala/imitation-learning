@@ -16,6 +16,7 @@ class DemoDataset(Dataset):
         camera: str = "agentview_image",
         image_size: int = 84,
         schema: str = "robomimic_image",
+        frame_stack: int = 1,
     ):
         if schema != "robomimic_image":
             raise ValueError(f"Unsupported dataset schema '{schema}'. Expected: robomimic_image")
@@ -23,6 +24,9 @@ class DemoDataset(Dataset):
         self.path = hdf5_path
         self.camera = camera
         self.schema = schema
+        self.frame_stack = frame_stack
+        if self.frame_stack < 1:
+            raise ValueError(f"frame_stack must be >= 1, got {self.frame_stack}")
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((image_size, image_size)),
@@ -39,6 +43,7 @@ class DemoDataset(Dataset):
             episode_keys = sorted(f["data"].keys())
             obs_group = f["data"][episode_keys[0]]["obs"]
             self.camera_key = self._resolve_camera_key(obs_group)
+            self.obs_shape = tuple(obs_group[self.camera_key].shape[1:])
 
             for ep_key in episode_keys:
                 n_steps = len(f["data"][ep_key]["actions"])
@@ -85,10 +90,16 @@ class DemoDataset(Dataset):
     def __getitem__(self, idx):
         ep_key, step = self.index[idx]
         with h5py.File(self.path, "r") as f:
-            obs = f["data"][ep_key]["obs"][self.camera_key][step]  # (H, W, C) uint8
+            obs_ds = f["data"][ep_key]["obs"][self.camera_key]
+            zero_obs = np.zeros(self.obs_shape, dtype=obs_ds.dtype)
+            stacked_obs = []
+            for offset in range(self.frame_stack - 1, -1, -1):
+                frame_step = step - offset
+                frame = zero_obs if frame_step < 0 else obs_ds[frame_step]
+                stacked_obs.append(self.transform(frame))
             action = f["data"][ep_key]["actions"][step]        # (7,)
 
-        obs_tensor = self.transform(obs)
+        obs_tensor = torch.cat(stacked_obs, dim=0)
         action_tensor = torch.tensor(action, dtype=torch.float32)
         if self.action_mean is not None and self.action_std is not None:
             action_tensor = (action_tensor - self.action_mean) / self.action_std
@@ -134,8 +145,9 @@ def make_dataloaders(
     train_split: float,
     schema: str = "robomimic_image",
     num_workers: int = 4,
+    frame_stack: int = 1,
 ):
-    dataset = DemoDataset(hdf5_path, camera, image_size, schema=schema)
+    dataset = DemoDataset(hdf5_path, camera, image_size, schema=schema, frame_stack=frame_stack)
     if len(dataset) < 2:
         raise ValueError("Dataset must contain at least 2 transitions to create train/val splits")
 

@@ -39,13 +39,17 @@ python3 scripts/train.py --config configs/train_dim6_weighted.yaml
 
 # Action-standardized baseline variant (A/B)
 python3 scripts/train.py --config configs/train_standardized.yaml
+
+# 4-frame stacked + standardized variant (temporal context A/B)
+python3 scripts/train.py --config configs/train_stacked4_standardized.yaml
 ```
 `configs/train_dim6_weighted.yaml` sets `training.action_loss_weights: [1, 1, 1, 1, 1, 1, 3]` and writes outputs to `runs_dim6_weighted/` and `models_dim6_weighted/`.
+Set `data.frame_stack` (`>=1`) to stack K frames in channel dimension (`3K` input channels) with zero-padding at episode start.
 Training computes action mean/std on the train split, normalizes action targets for optimization, and saves stats to `<checkpoint_dir>/action_stats.json`.
 
 ### 3. Monitor training
 ```bash
-tensorboard --logdir runs,runs_dim6_weighted
+tensorboard --logdir runs,runs_dim6_weighted,runs_standardized,runs_stacked4_standardized
 ```
 Logged scalars include aggregate loss (`Loss/train`, `Loss/val`) and per-action-dimension MSE (`LossPerDim/*`).
 
@@ -59,8 +63,12 @@ python3 scripts/evaluate.py --config configs/train_dim6_weighted.yaml --checkpoi
 
 # Action-standardized baseline variant
 python3 scripts/evaluate.py --config configs/train_standardized.yaml --checkpoint models_standardized/best.pt
+
+# 4-frame stacked + standardized variant
+python3 scripts/evaluate.py --config configs/train_stacked4_standardized.yaml --checkpoint models_stacked4_standardized/best.pt
 ```
 Evaluation auto-loads `<checkpoint_dir>/action_stats.json` (if present) and unnormalizes model outputs before environment stepping.
+Evaluation also reports progress metrics: max lift delta and min gripper-to-cube distance.
 
 ### 5. Smoke test
 ```bash

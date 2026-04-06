@@ -41,6 +41,32 @@ class TestSmoke(unittest.TestCase):
             self.assertEqual(tuple(pred.shape), (1, 7))
             self.assertTrue(torch.isfinite(pred).all().item())
 
+    def test_frame_stack_forward(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hdf5_path = os.path.join(tmp, "sample_stack.hdf5")
+            with h5py.File(hdf5_path, "w") as f:
+                data = f.create_group("data")
+                demo = data.create_group("demo_0")
+                obs = demo.create_group("obs")
+                images = np.random.randint(0, 255, size=(3, 84, 84, 3), dtype=np.uint8)
+                actions = np.random.randn(3, 7).astype(np.float32)
+                obs.create_dataset("agentview_image", data=images)
+                demo.create_dataset("actions", data=actions)
+
+            dataset = DemoDataset(
+                hdf5_path=hdf5_path,
+                camera="agentview_image",
+                image_size=84,
+                frame_stack=4,
+            )
+            obs_tensor, _ = dataset[0]
+            self.assertEqual(tuple(obs_tensor.shape), (12, 84, 84))
+
+            model = BCPolicy(action_dim=7, hidden_dim=64, freeze_encoder=False, in_channels=12)
+            pred = model(obs_tensor.unsqueeze(0))
+            self.assertEqual(tuple(pred.shape), (1, 7))
+            self.assertTrue(torch.isfinite(pred).all().item())
+
 
 if __name__ == "__main__":
     unittest.main()
