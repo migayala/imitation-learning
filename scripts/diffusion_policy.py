@@ -101,10 +101,13 @@ class DiffusionPolicy(nn.Module):
         in_channels: int = 3,
         state_dim: int = 0,
         dropout: float = 0.0,
+        pred_horizon: int = 1,
     ):
         super().__init__()
         self.T = T
-        self.action_dim = action_dim
+        self.single_action_dim = action_dim
+        self.pred_horizon = pred_horizon
+        self.action_dim = action_dim * pred_horizon  # noise predictor operates on flattened chunk
         self.ddim_steps = ddim_steps
 
         # --- Visual encoder (same pattern as BCPolicy) ---
@@ -146,7 +149,7 @@ class DiffusionPolicy(nn.Module):
         )
 
         # --- Noise predictor ---
-        self.noise_predictor = MLPNoisePredictor(action_dim, cond_dim, hidden_dim, n_blocks, dropout)
+        self.noise_predictor = MLPNoisePredictor(self.action_dim, cond_dim, hidden_dim, n_blocks, dropout)
 
         # --- Cosine noise schedule ---
         self._build_schedule(T)
@@ -205,7 +208,7 @@ class DiffusionPolicy(nn.Module):
         obs: torch.Tensor,
         state: torch.Tensor | None,
     ) -> torch.Tensor:
-        """DDIM deterministic inference. Returns (B, action_dim) normalized action."""
+        """DDIM deterministic inference. Returns (B, pred_horizon, single_action_dim) normalized action chunk."""
         B, device = obs.shape[0], obs.device
 
         obs_cond = self._encode_obs(obs, state)  # (B, cond_dim) — encode once
@@ -232,4 +235,5 @@ class DiffusionPolicy(nn.Module):
 
             x = acp_prev.sqrt() * x0_pred + (1.0 - acp_prev).sqrt() * eps_pred
 
-        return x
+        # Reshape flat chunk back to (B, pred_horizon, single_action_dim)
+        return x.view(x.shape[0], self.pred_horizon, self.single_action_dim)

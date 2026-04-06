@@ -88,6 +88,8 @@ def evaluate(cfg: dict, checkpoint: str, num_episodes: int = 50) -> float:
         freeze_encoder=cfg["model"].get("freeze_encoder", False),
         in_channels=3 * frame_stack,
         state_dim=cfg["model"].get("state_dim", 0),
+        pred_horizon=cfg["model"].get("pred_horizon", 1),
+        dropout=cfg["model"].get("dropout", 0.0),
     ).to(device)
     model.load_state_dict(torch.load(checkpoint, map_location=device))
     model.eval()
@@ -119,14 +121,26 @@ def evaluate(cfg: dict, checkpoint: str, num_episodes: int = 50) -> float:
         control_freq=env_cfg["control_freq"],
     )
     action_low, action_high = env.action_spec
+    exec_horizon = cfg["model"].get("exec_horizon", 1)
 
     successes = 0
     episode_max_lift = []
     episode_min_gripper_dist = []
 
+    def _get_state_tensor(obs):
+        if not state_keys:
+            return None
+        parts = [
+            obs[_DATASET_TO_ENV_KEY.get(k, k)].astype(np.float32).ravel()
+            for k in state_keys
+        ]
+        state_arr = np.concatenate(parts)
+        if state_mean is not None:
+            state_arr = (state_arr - state_mean) / state_std
+        return torch.tensor(state_arr, dtype=torch.float32).unsqueeze(0).to(device)
+
     for _ in tqdm(range(num_episodes), desc="Evaluating"):
         obs = env.reset()
-        done = False
         ep_success = False
         initial_cube_z = float(obs["cube_pos"][2]) if "cube_pos" in obs else float("nan")
         max_cube_z = initial_cube_z
@@ -139,38 +153,37 @@ def evaluate(cfg: dict, checkpoint: str, num_episodes: int = 50) -> float:
         frame_buffer.append(transform(obs[image_key]))
 
         max_steps = env_cfg.get("max_episode_steps", 500)
-        for _ in range(max_steps):
+        step = 0
+        while step < max_steps and not ep_success:
+            # Plan: get action chunk from current observation
             img_tensor = torch.cat(list(frame_buffer), dim=0).unsqueeze(0).to(device)
-
-            state_tensor = None
-            if state_keys:
-                parts = [
-                    obs[_DATASET_TO_ENV_KEY.get(k, k)].astype(np.float32).ravel()
-                    for k in state_keys
-                ]
-                state_arr = np.concatenate(parts)
-                if state_mean is not None:
-                    state_arr = (state_arr - state_mean) / state_std
-                state_tensor = torch.tensor(state_arr, dtype=torch.float32).unsqueeze(0).to(device)
+            state_tensor = _get_state_tensor(obs)
 
             with torch.no_grad():
-                action = model.get_action(img_tensor, state_tensor).squeeze(0).cpu().numpy()
+                # action_chunk: (1, pred_horizon, single_action_dim)
+                action_chunk = model.get_action(img_tensor, state_tensor)
+            action_chunk = action_chunk.squeeze(0).cpu().numpy()  # (pred_horizon, action_dim)
 
             if action_mean is not None and action_std is not None:
-                action = action * action_std + action_mean
-            action = np.clip(action, action_low, action_high)
+                action_chunk = action_chunk * action_std[None] + action_mean[None]
 
-            obs, reward, done, _ = env.step(action)
-            if "cube_pos" in obs:
-                max_cube_z = max(max_cube_z, float(obs["cube_pos"][2]))
-            d = _gripper_cube_distance(obs)
-            if np.isfinite(d):
-                min_gripper_dist = min(min_gripper_dist, d) if np.isfinite(min_gripper_dist) else d
-            frame_buffer.append(transform(obs[image_key]))
+            # Execute exec_horizon actions before re-planning
+            for i in range(exec_horizon):
+                if step >= max_steps or ep_success:
+                    break
+                action = np.clip(action_chunk[i], action_low, action_high)
+                obs, reward, done, _ = env.step(action)
+                step += 1
 
-            if done or reward > 0:
-                ep_success = True
-                break
+                if "cube_pos" in obs:
+                    max_cube_z = max(max_cube_z, float(obs["cube_pos"][2]))
+                d = _gripper_cube_distance(obs)
+                if np.isfinite(d):
+                    min_gripper_dist = min(min_gripper_dist, d) if np.isfinite(min_gripper_dist) else d
+                frame_buffer.append(transform(obs[image_key]))
+
+                if done or reward > 0:
+                    ep_success = True
 
         if ep_success:
             successes += 1

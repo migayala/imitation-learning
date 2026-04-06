@@ -50,6 +50,7 @@ def train(cfg: dict) -> None:
             num_workers=cfg["training"].get("num_workers", 4),
             frame_stack=cfg["data"].get("frame_stack", 1),
             state_keys=cfg["data"].get("state_keys"),
+            action_horizon=cfg["model"].get("pred_horizon", 1),
         )
     )
 
@@ -63,6 +64,8 @@ def train(cfg: dict) -> None:
         freeze_encoder=cfg["model"].get("freeze_encoder", False),
         in_channels=3 * cfg["data"].get("frame_stack", 1),
         state_dim=cfg["model"].get("state_dim", 0),
+        pred_horizon=cfg["model"].get("pred_horizon", 1),
+        dropout=cfg["model"].get("dropout", 0.0),
     ).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -120,10 +123,12 @@ def train(cfg: dict) -> None:
             state = state.to(device)
             actions = actions.to(device)
             state_input = state if state.shape[1] > 0 else None
+            # Flatten (B, pred_horizon, action_dim) → (B, pred_horizon * action_dim)
+            actions_flat = actions.view(actions.shape[0], -1)
 
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
-                loss = model(obs, state_input, actions)
+                loss = model(obs, state_input, actions_flat)
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -151,7 +156,7 @@ def train(cfg: dict) -> None:
                 actions = actions.to(device)
                 state_input = state if state.shape[1] > 0 else None
                 with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
-                    loss = model(obs, state_input, actions)
+                    loss = model(obs, state_input, actions.view(actions.shape[0], -1))
                 val_loss += loss.item()
         val_loss /= len(val_loader)
 

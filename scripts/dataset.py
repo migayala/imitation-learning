@@ -18,6 +18,7 @@ class DemoDataset(Dataset):
         schema: str = "robomimic_image",
         frame_stack: int = 1,
         state_keys: list[str] | None = None,
+        action_horizon: int = 1,
     ):
         if schema != "robomimic_image":
             raise ValueError(f"Unsupported dataset schema '{schema}'. Expected: robomimic_image")
@@ -29,6 +30,9 @@ class DemoDataset(Dataset):
         if self.frame_stack < 1:
             raise ValueError(f"frame_stack must be >= 1, got {self.frame_stack}")
         self.state_keys: list[str] = list(state_keys) if state_keys else []
+        if action_horizon < 1:
+            raise ValueError(f"action_horizon must be >= 1, got {action_horizon}")
+        self.action_horizon = action_horizon
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((image_size, image_size)),
@@ -113,7 +117,16 @@ class DemoDataset(Dataset):
                 frame_step = step - offset
                 frame = zero_obs if frame_step < 0 else obs_ds[frame_step]
                 stacked_obs.append(self.transform(frame))
-            action = f["data"][ep_key]["actions"][step]        # (7,)
+            # Load action(s) — single step or chunk (zero-padded at episode end)
+            actions_ds = f["data"][ep_key]["actions"]
+            if self.action_horizon == 1:
+                action = actions_ds[step]
+            else:
+                n_steps = actions_ds.shape[0]
+                chunk = np.zeros((self.action_horizon, actions_ds.shape[1]), dtype=np.float32)
+                valid = min(self.action_horizon, n_steps - step)
+                chunk[:valid] = actions_ds[step: step + valid]
+                action = chunk  # (action_horizon, action_dim)
 
             # Load low-dim state for current step
             if self.state_keys:
@@ -130,6 +143,7 @@ class DemoDataset(Dataset):
         state_tensor = torch.tensor(state_arr, dtype=torch.float32)
 
         if self.action_mean is not None and self.action_std is not None:
+            # Works for both (action_dim,) and (action_horizon, action_dim) shapes
             action_tensor = (action_tensor - self.action_mean) / self.action_std
         if self.state_mean is not None and self.state_std is not None:
             state_tensor = (state_tensor - self.state_mean) / self.state_std
@@ -215,10 +229,12 @@ def make_dataloaders(
     num_workers: int = 4,
     frame_stack: int = 1,
     state_keys: list[str] | None = None,
+    action_horizon: int = 1,
 ):
     dataset = DemoDataset(
         hdf5_path, camera, image_size, schema=schema,
         frame_stack=frame_stack, state_keys=state_keys,
+        action_horizon=action_horizon,
     )
     if len(dataset) < 2:
         raise ValueError("Dataset must contain at least 2 transitions to create train/val splits")

@@ -19,10 +19,13 @@ model:
   ddim_steps: 10
   freeze_encoder: false
   state_dim: 19  # robot0_eef_pos(3) + robot0_eef_quat(4) + robot0_gripper_qpos(2) + object(10)
+  pred_horizon: 8   # predict 8 future actions jointly
+  exec_horizon: 4   # execute 4 before re-planning
+  dropout: 0.1
 
 training:
   seed: 42
-  epochs: 200
+  epochs: 100
   batch_size: 64
   num_workers: 4
   lr: 0.0001
