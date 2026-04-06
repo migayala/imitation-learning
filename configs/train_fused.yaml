@@ -1,0 +1,32 @@
+data:
+  path: data/image.hdf5
+  schema: robomimic_image
+  camera: agentview_image
+  train_split: 0.9
+  image_size: 84
+  state_keys:
+    - robot0_eef_pos
+    - robot0_eef_quat
+    - robot0_gripper_qpos
+
+model:
+  encoder: resnet18
+  freeze_encoder: false
+  action_dim: 7
+  hidden_dim: 256
+  state_dim: 9  # robot0_eef_pos(3) + robot0_eef_quat(4) + robot0_gripper_qpos(2)
+
+training:
+  seed: 42
+  epochs: 100
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0001
+  weight_decay: 0.00001
+  grad_clip: 1.0
+  save_every: 10
+  log_dir: runs_fused/
+  checkpoint_dir: models_fused/
+
+evaluation:
+  seed: 42

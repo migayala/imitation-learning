@@ -31,6 +31,20 @@ def load_action_stats(checkpoint: str):
     return action_mean, action_std
 
 
+def load_state_stats(checkpoint: str):
+    state_stats_path = os.path.join(os.path.dirname(checkpoint), "state_stats.json")
+    if not os.path.exists(state_stats_path):
+        return None, None, []
+
+    with open(state_stats_path, "r", encoding="utf-8") as f:
+        stats = json.load(f)
+
+    state_mean = np.asarray(stats["state_mean"], dtype=np.float32)
+    state_std = np.asarray(stats["state_std"], dtype=np.float32)
+    state_keys = stats.get("state_keys", [])
+    return state_mean, state_std, state_keys
+
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -60,11 +74,13 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
     partial_lift_threshold = float(cfg.get("evaluation", {}).get("partial_lift_threshold", 0.03))
 
     # Load model
+    state_mean, state_std, state_keys = load_state_stats(checkpoint)
     model = BCPolicy(
         action_dim=cfg["model"]["action_dim"],
         hidden_dim=cfg["model"]["hidden_dim"],
         freeze_encoder=cfg["model"]["freeze_encoder"],
         in_channels=3 * frame_stack,
+        state_dim=cfg["model"].get("state_dim", 0),
     ).to(device)
     model.load_state_dict(torch.load(checkpoint, map_location=device))
     model.eval()
@@ -73,6 +89,8 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
         print("Warning: action_stats.json not found. Using raw model outputs without unnormalization.")
     else:
         print(f"Loaded action stats from: {os.path.join(os.path.dirname(checkpoint), 'action_stats.json')}")
+    if state_keys:
+        print(f"Loaded state stats for keys: {state_keys}")
 
     transform = transforms.Compose([
         transforms.ToPILImage(),
@@ -117,8 +135,16 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
         for _ in range(env_cfg["max_episode_steps"] if "max_episode_steps" in env_cfg else 500):
             img_tensor = torch.cat(list(frame_buffer), dim=0).unsqueeze(0).to(device)  # (1, 3K, H, W)
 
+            state_tensor = None
+            if state_keys:
+                state_parts = [obs[k].astype(np.float32).ravel() for k in state_keys]
+                state_arr = np.concatenate(state_parts)
+                if state_mean is not None:
+                    state_arr = (state_arr - state_mean) / state_std
+                state_tensor = torch.tensor(state_arr, dtype=torch.float32).unsqueeze(0).to(device)
+
             with torch.no_grad():
-                action = model(img_tensor).squeeze(0).cpu().numpy()
+                action = model(img_tensor, state_tensor).squeeze(0).cpu().numpy()
             if action_mean is not None and action_std is not None:
                 action = action * action_std + action_mean
             action = np.clip(action, action_low, action_high)

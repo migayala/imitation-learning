@@ -14,6 +14,7 @@ class BCPolicy(nn.Module):
         hidden_dim: int = 256,
         freeze_encoder: bool = False,
         in_channels: int = 3,
+        state_dim: int = 0,
     ):
         super().__init__()
 
@@ -46,20 +47,22 @@ class BCPolicy(nn.Module):
             for param in self.encoder.parameters():
                 param.requires_grad = False
 
-        # Action head
+        # Action head — input is image features + optional low-dim state
         self.action_head = nn.Sequential(
-            nn.Linear(encoder_dim, hidden_dim),
+            nn.Linear(encoder_dim + state_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, action_dim),
         )
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+    def forward(self, obs: torch.Tensor, state: torch.Tensor | None = None) -> torch.Tensor:
         """
-        obs: (B, C, H, W) normalized image
+        obs:   (B, C, H, W) normalized image
+        state: (B, state_dim) normalized low-dim state, or None
         returns: (B, action_dim) predicted action
         """
-        features = self.encoder(obs)          # (B, 512, 1, 1)
-        features = features.flatten(1)        # (B, 512)
-        return self.action_head(features)     # (B, action_dim)
+        features = self.encoder(obs).flatten(1)   # (B, 512)
+        if state is not None:
+            features = torch.cat([features, state], dim=1)  # (B, 512 + state_dim)
+        return self.action_head(features)          # (B, action_dim)

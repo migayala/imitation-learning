@@ -17,6 +17,7 @@ class DemoDataset(Dataset):
         image_size: int = 84,
         schema: str = "robomimic_image",
         frame_stack: int = 1,
+        state_keys: list[str] | None = None,
     ):
         if schema != "robomimic_image":
             raise ValueError(f"Unsupported dataset schema '{schema}'. Expected: robomimic_image")
@@ -27,6 +28,7 @@ class DemoDataset(Dataset):
         self.frame_stack = frame_stack
         if self.frame_stack < 1:
             raise ValueError(f"frame_stack must be >= 1, got {self.frame_stack}")
+        self.state_keys: list[str] = list(state_keys) if state_keys else []
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((image_size, image_size)),
@@ -36,6 +38,9 @@ class DemoDataset(Dataset):
         ])
         self.action_mean = None
         self.action_std = None
+        self.state_mean = None
+        self.state_std = None
+        self.state_dim = 0
 
         self.index = []
         with h5py.File(hdf5_path, "r") as f:
@@ -44,6 +49,17 @@ class DemoDataset(Dataset):
             obs_group = f["data"][episode_keys[0]]["obs"]
             self.camera_key = self._resolve_camera_key(obs_group)
             self.obs_shape = tuple(obs_group[self.camera_key].shape[1:])
+
+            # Validate state keys and compute state_dim
+            if self.state_keys:
+                obs_group_0 = f["data"][episode_keys[0]]["obs"]
+                for k in self.state_keys:
+                    if k not in obs_group_0:
+                        available = sorted(obs_group_0.keys())
+                        raise KeyError(f"State key '{k}' not found. Available: {available}")
+                self.state_dim = sum(
+                    int(np.prod(obs_group_0[k].shape[1:])) for k in self.state_keys
+                )
 
             for ep_key in episode_keys:
                 n_steps = len(f["data"][ep_key]["actions"])
@@ -99,20 +115,72 @@ class DemoDataset(Dataset):
                 stacked_obs.append(self.transform(frame))
             action = f["data"][ep_key]["actions"][step]        # (7,)
 
+            # Load low-dim state for current step
+            if self.state_keys:
+                state_parts = [
+                    f["data"][ep_key]["obs"][k][step].astype(np.float32).ravel()
+                    for k in self.state_keys
+                ]
+                state_arr = np.concatenate(state_parts)
+            else:
+                state_arr = np.zeros(0, dtype=np.float32)
+
         obs_tensor = torch.cat(stacked_obs, dim=0)
         action_tensor = torch.tensor(action, dtype=torch.float32)
+        state_tensor = torch.tensor(state_arr, dtype=torch.float32)
+
         if self.action_mean is not None and self.action_std is not None:
             action_tensor = (action_tensor - self.action_mean) / self.action_std
-        return obs_tensor, action_tensor
+        if self.state_mean is not None and self.state_std is not None:
+            state_tensor = (state_tensor - self.state_mean) / self.state_std
+
+        return obs_tensor, state_tensor, action_tensor
 
     def get_raw_action(self, idx: int) -> np.ndarray:
         ep_key, step = self.index[idx]
         with h5py.File(self.path, "r") as f:
             return np.asarray(f["data"][ep_key]["actions"][step], dtype=np.float64)
 
+    def get_raw_state(self, idx: int) -> np.ndarray:
+        if not self.state_keys:
+            return np.zeros(0, dtype=np.float64)
+        ep_key, step = self.index[idx]
+        with h5py.File(self.path, "r") as f:
+            parts = [
+                f["data"][ep_key]["obs"][k][step].astype(np.float64).ravel()
+                for k in self.state_keys
+            ]
+        return np.concatenate(parts)
+
     def set_action_normalization(self, action_mean: torch.Tensor, action_std: torch.Tensor) -> None:
         self.action_mean = action_mean.to(dtype=torch.float32, device="cpu")
         self.action_std = action_std.to(dtype=torch.float32, device="cpu")
+
+    def set_state_normalization(self, state_mean: torch.Tensor, state_std: torch.Tensor) -> None:
+        self.state_mean = state_mean.to(dtype=torch.float32, device="cpu")
+        self.state_std = state_std.to(dtype=torch.float32, device="cpu")
+
+
+def compute_state_stats(dataset: DemoDataset, indices: list[int]) -> tuple[torch.Tensor, torch.Tensor] | tuple[None, None]:
+    if not dataset.state_keys or not indices:
+        return None, None
+
+    first = dataset.get_raw_state(indices[0])
+    state_dim = first.shape[0]
+    sum_state = np.zeros(state_dim, dtype=np.float64)
+    sum_sq_state = np.zeros(state_dim, dtype=np.float64)
+
+    for idx in indices:
+        s = dataset.get_raw_state(idx)
+        sum_state += s
+        sum_sq_state += s * s
+
+    count = float(len(indices))
+    mean = sum_state / count
+    var = np.maximum(sum_sq_state / count - mean * mean, 1e-12)
+    std = np.sqrt(var)
+
+    return torch.tensor(mean, dtype=torch.float32), torch.tensor(std, dtype=torch.float32)
 
 
 def compute_action_stats(dataset: DemoDataset, indices: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -146,8 +214,12 @@ def make_dataloaders(
     schema: str = "robomimic_image",
     num_workers: int = 4,
     frame_stack: int = 1,
+    state_keys: list[str] | None = None,
 ):
-    dataset = DemoDataset(hdf5_path, camera, image_size, schema=schema, frame_stack=frame_stack)
+    dataset = DemoDataset(
+        hdf5_path, camera, image_size, schema=schema,
+        frame_stack=frame_stack, state_keys=state_keys,
+    )
     if len(dataset) < 2:
         raise ValueError("Dataset must contain at least 2 transitions to create train/val splits")
 
@@ -165,10 +237,16 @@ def make_dataloaders(
     action_mean, action_std = compute_action_stats(dataset, train_set.indices)
     dataset.set_action_normalization(action_mean, action_std)
 
+    state_mean, state_std = compute_state_stats(dataset, train_set.indices)
+    if state_mean is not None:
+        dataset.set_state_normalization(state_mean, state_std)
+
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers, pin_memory=torch.cuda.is_available())
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False,
                             num_workers=num_workers, pin_memory=torch.cuda.is_available())
 
     print(f"Dataset: {len(dataset)} steps | train: {n_train} | val: {n_val}")
-    return train_loader, val_loader, action_mean, action_std
+    if dataset.state_keys:
+        print(f"State keys: {dataset.state_keys} | state_dim: {dataset.state_dim}")
+    return train_loader, val_loader, action_mean, action_std, state_mean, state_std

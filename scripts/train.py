@@ -39,7 +39,7 @@ def train(cfg):
     print(f"Training on: {device}")
     print(f"Seed: {seed}")
 
-    train_loader, val_loader, action_mean_cpu, action_std_cpu = make_dataloaders(
+    train_loader, val_loader, action_mean_cpu, action_std_cpu, state_mean_cpu, state_std_cpu = make_dataloaders(
         hdf5_path=cfg["data"]["path"],
         camera=cfg["data"]["camera"],
         image_size=cfg["data"]["image_size"],
@@ -48,6 +48,7 @@ def train(cfg):
         schema=cfg["data"].get("schema", "robomimic_image"),
         num_workers=cfg["training"].get("num_workers", 4),
         frame_stack=cfg["data"].get("frame_stack", 1),
+        state_keys=cfg["data"].get("state_keys"),
     )
 
     model = BCPolicy(
@@ -55,6 +56,7 @@ def train(cfg):
         hidden_dim=cfg["model"]["hidden_dim"],
         freeze_encoder=cfg["model"]["freeze_encoder"],
         in_channels=3 * cfg["data"].get("frame_stack", 1),
+        state_dim=cfg["model"].get("state_dim", 0),
     ).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -65,6 +67,8 @@ def train(cfg):
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     action_mean = action_mean_cpu.to(device=device)
     action_std = action_std_cpu.to(device=device)
+    state_mean = state_mean_cpu.to(device=device) if state_mean_cpu is not None else None
+    state_std = state_std_cpu.to(device=device) if state_std_cpu is not None else None
 
     os.makedirs(cfg["training"]["checkpoint_dir"], exist_ok=True)
     writer = SummaryWriter(cfg["training"]["log_dir"])
@@ -81,6 +85,16 @@ def train(cfg):
             "source": "train_split",
         },
     )
+    if state_mean_cpu is not None and state_std_cpu is not None:
+        write_metadata(
+            os.path.join(cfg["training"]["checkpoint_dir"], "state_stats.json"),
+            {
+                "state_mean": [float(x) for x in state_mean_cpu.tolist()],
+                "state_std": [float(x) for x in state_std_cpu.tolist()],
+                "state_keys": cfg["data"].get("state_keys", []),
+                "source": "train_split",
+            },
+        )
     write_metadata(
         os.path.join(cfg["training"]["checkpoint_dir"], "run_metadata.json"),
         {
@@ -118,11 +132,11 @@ def train(cfg):
         train_loss = 0.0
         train_count = 0
         train_sqerr = torch.zeros(action_dim, dtype=torch.float64)
-        for obs, actions in tqdm(train_loader, desc=f"Epoch {epoch:3d} [train]", leave=False):
-            obs, actions = obs.to(device), actions.to(device)
+        for obs, state, actions in tqdm(train_loader, desc=f"Epoch {epoch:3d} [train]", leave=False):
+            obs, state, actions = obs.to(device), state.to(device), actions.to(device)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
-                pred = model(obs)
+                pred = model(obs, state if state.shape[1] > 0 else None)
                 per_dim_mse = (pred - actions).pow(2).mean(dim=0)
                 loss = (per_dim_mse * action_loss_weights).mean()
             scaler.scale(loss).backward()
@@ -144,10 +158,10 @@ def train(cfg):
         val_count = 0
         val_sqerr = torch.zeros(action_dim, dtype=torch.float64)
         with torch.no_grad():
-            for obs, actions in tqdm(val_loader, desc=f"Epoch {epoch:3d} [val]", leave=False):
-                obs, actions = obs.to(device), actions.to(device)
+            for obs, state, actions in tqdm(val_loader, desc=f"Epoch {epoch:3d} [val]", leave=False):
+                obs, state, actions = obs.to(device), state.to(device), actions.to(device)
                 with torch.amp.autocast(device_type=autocast_device, enabled=use_amp):
-                    pred = model(obs)
+                    pred = model(obs, state if state.shape[1] > 0 else None)
                     per_dim_mse = (pred - actions).pow(2).mean(dim=0)
                     loss = (per_dim_mse * action_loss_weights).mean()
                 val_loss += loss.item()
