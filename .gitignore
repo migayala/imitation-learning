@@ -6,3 +6,11 @@ __pycache__/
 data/
 runs/
 models/
+
+# Model checkpoints and tensorboard runs (all variants)
+models_*/
+runs_*/
+
+# Log files
+logs/
+*.log
