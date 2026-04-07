@@ -207,8 +207,10 @@ class DiffusionPolicy(nn.Module):
         self,
         obs: torch.Tensor,
         state: torch.Tensor | None,
+        eta: float = 0.0,
     ) -> torch.Tensor:
-        """DDIM deterministic inference. Returns (B, pred_horizon, single_action_dim) normalized action chunk."""
+        """DDIM inference. eta=0 → deterministic, eta=1 → DDPM-like stochastic.
+        Returns (B, pred_horizon, single_action_dim) normalized action chunk."""
         B, device = obs.shape[0], obs.device
 
         obs_cond = self._encode_obs(obs, state)  # (B, cond_dim) — encode once
@@ -233,7 +235,13 @@ class DiffusionPolicy(nn.Module):
             else:
                 acp_prev = torch.tensor(1.0, device=device)  # final step → clean
 
-            x = acp_prev.sqrt() * x0_pred + (1.0 - acp_prev).sqrt() * eps_pred
+            if eta > 0.0 and i < len(self._ddim_timesteps) - 1:
+                # Stochastic DDIM: sigma controls noise added at each step
+                sigma = eta * ((1.0 - acp_prev) / (1.0 - acp_t)).sqrt() * (1.0 - acp_t / acp_prev).sqrt()
+                noise = torch.randn_like(x)
+                x = acp_prev.sqrt() * x0_pred + (1.0 - acp_prev - sigma ** 2).clamp(min=0).sqrt() * eps_pred + sigma * noise
+            else:
+                x = acp_prev.sqrt() * x0_pred + (1.0 - acp_prev).sqrt() * eps_pred
 
         # Reshape flat chunk back to (B, pred_horizon, single_action_dim)
         return x.view(x.shape[0], self.pred_horizon, self.single_action_dim)

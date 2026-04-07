@@ -62,7 +62,7 @@ def _gripper_cube_distance(obs: dict) -> float:
     return float("nan")
 
 
-def evaluate(cfg: dict, checkpoint: str, num_episodes: int = 50) -> float:
+def evaluate(cfg: dict, checkpoint: str, num_episodes: int = 50, eta: float = 0.0) -> float:
     seed = cfg.get("evaluation", {}).get("seed", cfg["training"].get("seed", 42))
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -147,7 +147,10 @@ def evaluate(cfg: dict, checkpoint: str, num_episodes: int = 50) -> float:
         min_gripper_dist = _gripper_cube_distance(obs)
 
         frame_buffer = deque(maxlen=frame_stack)
-        zero_frame = torch.zeros(3, cfg["data"]["image_size"], cfg["data"]["image_size"])
+        # Zero-pad with a black image through the same transform, matching how training handles
+        # frames before episode start (dataset.py uses zeros of the raw obs dtype).
+        _black = np.zeros((cfg["data"]["image_size"], cfg["data"]["image_size"], 3), dtype=np.uint8)
+        zero_frame = transform(_black)
         for _ in range(frame_stack - 1):
             frame_buffer.append(zero_frame)
         frame_buffer.append(transform(obs[image_key]))
@@ -161,7 +164,7 @@ def evaluate(cfg: dict, checkpoint: str, num_episodes: int = 50) -> float:
 
             with torch.no_grad():
                 # action_chunk: (1, pred_horizon, single_action_dim)
-                action_chunk = model.get_action(img_tensor, state_tensor)
+                action_chunk = model.get_action(img_tensor, state_tensor, eta=eta)
             action_chunk = action_chunk.squeeze(0).cpu().numpy()  # (pred_horizon, action_dim)
 
             if action_mean is not None and action_std is not None:
@@ -221,6 +224,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", default="configs/train_diffusion.yaml")
     parser.add_argument("--checkpoint", default="models_diffusion/best.pt")
     parser.add_argument("--episodes", type=int, default=50)
+    parser.add_argument("--eta", type=float, default=0.0, help="DDIM stochasticity (0=deterministic, 1=DDPM)")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -229,4 +233,4 @@ if __name__ == "__main__":
         col_cfg = yaml.safe_load(f)
     cfg["env"] = col_cfg["env"]
 
-    evaluate(cfg, args.checkpoint, args.episodes)
+    evaluate(cfg, args.checkpoint, args.episodes, eta=args.eta)

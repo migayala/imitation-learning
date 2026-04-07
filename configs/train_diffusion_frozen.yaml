@@ -1,0 +1,41 @@
+data:
+  path: data/image.hdf5
+  schema: robomimic_image
+  camera: agentview_image
+  train_split: 0.9
+  image_size: 84
+  frame_stack: 1
+  state_keys:
+    - robot0_eef_pos
+    - robot0_eef_quat
+    - robot0_gripper_qpos
+    - object
+
+model:
+  action_dim: 7
+  hidden_dim: 256
+  cond_dim: 256
+  n_blocks: 4
+  T: 100
+  ddim_steps: 10
+  freeze_encoder: true   # freeze ResNet18 — 11M fewer trainable params, critical for 200-demo dataset
+  state_dim: 19  # robot0_eef_pos(3) + robot0_eef_quat(4) + robot0_gripper_qpos(2) + object(10)
+  pred_horizon: 8
+  exec_horizon: 4
+  dropout: 0.1
+
+training:
+  seed: 42
+  epochs: 200
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0003
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  save_every: 20
+  log_dir: runs_diffusion_frozen/
+  checkpoint_dir: models_diffusion_frozen/
+
+evaluation:
+  seed: 42
+  partial_lift_threshold: 0.03
