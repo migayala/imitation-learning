@@ -18,6 +18,12 @@ from tqdm import tqdm
 from model import BCPolicy
 
 
+# Some dataset obs keys differ from live env obs keys
+_DATASET_TO_ENV_KEY = {
+    "object": "object-state",
+}
+
+
 def load_action_stats(checkpoint: str):
     action_stats_path = os.path.join(os.path.dirname(checkpoint), "action_stats.json")
     if not os.path.exists(action_stats_path):
@@ -137,7 +143,10 @@ def evaluate(cfg, checkpoint: str, num_episodes: int = 50):
 
             state_tensor = None
             if state_keys:
-                state_parts = [obs[k].astype(np.float32).ravel() for k in state_keys]
+                state_parts = [
+                    obs[_DATASET_TO_ENV_KEY.get(k, k)].astype(np.float32).ravel()
+                    for k in state_keys
+                ]
                 state_arr = np.concatenate(state_parts)
                 if state_mean is not None:
                     state_arr = (state_arr - state_mean) / state_std
